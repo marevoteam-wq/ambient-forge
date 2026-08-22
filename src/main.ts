@@ -3,8 +3,8 @@ import { Picker } from "emoji-picker-element";
 import emojiDataUrl from "emoji-picker-element-data/en/emojibase/data.json?url";
 import "./style.css";
 import {
-  CHANNEL, LOCAL_CHANNEL, STATE_KEY, Folder, Library, LocalMessage, PlaybackState,
-  Scene, SourceKind, SyncMessage, Track, emptyState, starterLibrary,
+  CHANNEL, LOCAL_CHANNEL, LIBRARY_LIMITS, Folder, Library, LocalMessage, PlaybackState,
+  Scene, SourceKind, SyncMessage, Track, emptyState, starterLibrary, validLocalMessage, validScene, validSourceUrl, validSyncMessage, youtubeId,
 } from "./model";
 import { parseImportedLibrary } from "./importer";
 import { loadLibrary, saveLibrary } from "./storage";
@@ -18,10 +18,11 @@ let master = { volume: 80, muted: false };
 let audioEnabled = false;
 let previewSceneId: string | null = null;
 let foldersCollapsed = false;
+const MAX_IMPORT_BYTES = 5 * 1024 * 1024;
 
 try {
   const stored = JSON.parse(localStorage.getItem("ambient-forge-master") || "null") as typeof master | null;
-  if (stored) master = stored;
+  if (stored && typeof stored.volume === "number" && stored.volume >= 0 && stored.volume <= 100 && typeof stored.muted === "boolean") master = stored;
 } catch { /* ignored */ }
 
 const esc = (value: string) => value.replace(/[&<>"]/g, char => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[char]!);
@@ -81,13 +82,23 @@ async function persist() {
 
 async function publish(next: PlaybackState) {
   if (role !== "GM") return;
-  playback = { ...next, version: 1, revision: playback.revision + 1, updatedAt: Date.now() };
+  const state = { ...next, version: 1 as const, revision: playback.revision + 1, updatedAt: Date.now() };
+  const message = { type: "STATE", state } satisfies SyncMessage;
+  if (!validSyncMessage(message)) {
+    toast("This active mix is too large to synchronize. Stop a scene or shorten its source URLs.", true);
+    return;
+  }
+  playback = state;
   render();
-  const message = { type: "STATE", state: playback } satisfies SyncMessage;
-  await Promise.all([
-    OBR.broadcast.sendMessage(CHANNEL, message, { destination: "ALL" }),
-    OBR.room.setMetadata({ [STATE_KEY]: playback }),
-  ]);
+  await OBR.broadcast.sendMessage(CHANNEL, message, { destination: "ALL" });
+}
+
+async function sendLocal(message: LocalMessage) {
+  if (!validLocalMessage(message)) {
+    toast("This scene is too large to preview. Shorten its source URLs or remove a track.", true);
+    return;
+  }
+  await OBR.broadcast.sendMessage(LOCAL_CHANNEL, message, { destination: "LOCAL" });
 }
 
 function isActive(sceneId: string) { return playback.active.some(item => item.scene.id === sceneId); }
@@ -132,12 +143,12 @@ async function toggleScenePause(sceneId: string) {
 async function setMaster(volume: number, muted = master.muted) {
   master = { volume, muted };
   localStorage.setItem("ambient-forge-master", JSON.stringify(master));
-  await OBR.broadcast.sendMessage(LOCAL_CHANNEL, { type: "MASTER", ...master } satisfies LocalMessage, { destination: "LOCAL" });
+  await sendLocal({ type: "MASTER", ...master });
 }
 
 async function enableAudio() {
   audioEnabled = true;
-  await OBR.broadcast.sendMessage(LOCAL_CHANNEL, { type: "UNLOCK" } satisfies LocalMessage, { destination: "LOCAL" });
+  await sendLocal({ type: "UNLOCK" });
   render();
   toast("Audio enabled in this browser");
 }
@@ -170,7 +181,7 @@ function render() {
       <main class="workspace ${foldersCollapsed ? "folders-collapsed" : ""}">
         <aside class="folders">
           <div class="section-title"><button id="toggle-folders" class="folders-toggle" title="${foldersCollapsed ? "Expand folders" : "Collapse folders"}">${chevronIcon(foldersCollapsed)}</button><span>Folders</span><button id="add-folder" title="New folder">${plusIcon}</button></div>
-          <div class="folder-list">${library.folders.map(folder => `<button class="folder ${folder.id === selectedFolder ? "active" : ""}" data-folder="${folder.id}" title="${esc(folder.name)}"><span class="folder-symbol ${folder.icon ? "has-emoji" : ""}">${folder.icon ? `<b>${esc(folder.icon)}</b>` : ""}<i style="background:${folder.color}"></i></span><span>${esc(folder.name)}</span><em>${library.scenes.filter(s => s.folderId === folder.id).length}</em></button>`).join("")}</div>
+          <div class="folder-list">${library.folders.map(folder => `<button class="folder ${folder.id === selectedFolder ? "active" : ""}" data-folder="${folder.id}" title="${esc(folder.name)}"><span class="folder-symbol ${folder.icon ? "has-emoji" : ""}">${folder.icon ? `<b>${esc(folder.icon)}</b>` : ""}<i style="background:${esc(folder.color)}"></i></span><span>${esc(folder.name)}</span><em>${library.scenes.filter(s => s.folderId === folder.id).length}</em></button>`).join("")}</div>
           <div class="library-actions"><button id="import" title="Import Ambient Forge, JSON, or Djinni library">${importIcon}<span>Import</span></button><button id="export">${exportIcon}<span>Export</span></button><button id="delete-all-scenes" class="delete-all-scenes">Delete all folders &amp; scenes</button><input id="import-file" type="file" accept=".aforge,.json,.djinni,.txt,application/json,text/plain" hidden></div>
         </aside>
         <section class="scenes">
@@ -194,7 +205,7 @@ function sceneCard(scene: Scene) {
   const activeScene = playback.active.find(item => item.scene.id === scene.id);
   const active = !!activeScene;
   const paused = activeScene?.pausedAt !== undefined;
-  return `<article class="scene-card ${active ? "active" : ""}" style="--accent:${scene.color}">
+  return `<article class="scene-card ${active ? "active" : ""}" style="--accent:${esc(scene.color)}">
     <button class="play-scene" data-play="${scene.id}"><span class="scene-icon">${esc(scene.icon || "♫")}</span><span class="play-mark">${active ? "■" : "▶"}</span></button>
     <div class="scene-info"><strong>${esc(scene.name)}</strong><span>${scene.tracks.length} track${scene.tracks.length === 1 ? "" : "s"}</span></div>
     <div class="scene-actions">${active ? `<button data-scene-pause="${scene.id}" title="${paused ? "Resume from saved position" : "Pause scene"}" ${playback.status === "paused" ? "disabled" : ""}>${paused ? "▶" : pauseIcon}</button>` : ""}<button class="edit-scene" data-edit="${scene.id}" title="Edit">✎</button><button data-delete="${scene.id}" title="Delete">×</button></div>
@@ -237,10 +248,10 @@ function wireGm() {
     if (!scene) return;
     if (previewSceneId === scene.id) {
       previewSceneId = null;
-      void OBR.broadcast.sendMessage(LOCAL_CHANNEL, { type: "STOP_PREVIEW" } satisfies LocalMessage, { destination: "LOCAL" });
+      void sendLocal({ type: "STOP_PREVIEW" });
     } else {
       previewSceneId = scene.id;
-      void OBR.broadcast.sendMessage(LOCAL_CHANNEL, { type: "PREVIEW", scene } satisfies LocalMessage, { destination: "LOCAL" });
+      void sendLocal({ type: "PREVIEW", scene });
     }
     render();
   });
@@ -261,7 +272,7 @@ function wireGm() {
       if (isActive(sceneId)) {
         await publish({ ...playback, active: playback.active.map(item => item.scene.id === sceneId ? { ...item, scene: updatedScene } : item) });
       } else if (previewSceneId === sceneId) {
-        await OBR.broadcast.sendMessage(LOCAL_CHANNEL, { type: "PREVIEW", scene: updatedScene } satisfies LocalMessage, { destination: "LOCAL" });
+        await sendLocal({ type: "PREVIEW", scene: updatedScene });
       }
     };
   });
@@ -293,6 +304,10 @@ function dialogShell(title: string, body: string, wide = false) {
 }
 
 function openFolderDialog(folder?: Folder) {
+  if (!folder && library.folders.length >= LIBRARY_LIMITS.folders) {
+    toast(`A library can contain up to ${LIBRARY_LIMITS.folders} folders.`, true);
+    return;
+  }
   const dialog = dialogShell(folder ? "Folder settings" : "New folder", `
     <div class="folder-fields">${emojiField("folder-icon", folder?.icon || "", "Icon")}<label>Name<input id="folder-name" maxlength="40" value="${esc(folder?.name || "New folder")}" required></label><label>Color<input id="folder-color" type="color" value="${folder?.color || "#8b6ff7"}"></label></div>
     <div class="dialog-actions">${folder && library.folders.length > 1 ? `<button type="button" id="delete-folder" class="danger-text">Delete folder</button>` : "<span></span>"}<button value="cancel" class="secondary">Cancel</button><button type="button" id="save-folder" class="primary">Save</button></div>`);
@@ -319,6 +334,10 @@ function newTrack(): Track {
 }
 
 function openSceneDialog(existing?: Scene) {
+  if (!existing && library.scenes.length >= LIBRARY_LIMITS.scenes) {
+    toast(`A library can contain up to ${LIBRARY_LIMITS.scenes} scenes.`, true);
+    return;
+  }
   let draft: Scene = existing ? structuredClone(existing) : {
     id: crypto.randomUUID(), folderId: selectedFolder, name: "New scene", icon: "♫", color: library.folders.find(f => f.id === selectedFolder)?.color || "#8b6ff7", volume: 80, fadeIn: 0, fadeOut: 3, tracks: [newTrack()],
   };
@@ -359,12 +378,23 @@ function openSceneDialog(existing?: Scene) {
       input.style.setProperty("--range-value", `${input.value}%`);
       byId("scene-volume-value").textContent = `${input.value}%`;
     };
-    byId<HTMLButtonElement>("add-track").onclick = () => { syncDraft(); draft.tracks.push(newTrack()); draw(); };
+    byId<HTMLButtonElement>("add-track").onclick = () => {
+      syncDraft();
+      if (draft.tracks.length >= LIBRARY_LIMITS.tracksPerScene) {
+        toast(`A scene can contain up to ${LIBRARY_LIMITS.tracksPerScene} tracks.`, true);
+        return;
+      }
+      draft.tracks.push(newTrack());
+      draw();
+    };
     document.querySelectorAll<HTMLButtonElement>("[data-remove-track]").forEach(button => button.onclick = () => { syncDraft(); draft.tracks.splice(Number(button.dataset.removeTrack), 1); draw(); });
     byId<HTMLButtonElement>("save-scene").onclick = async () => {
       syncDraft(); draft.name = draft.name.trim();
       if (!draft.name) return toast("Enter a scene name", true);
       if (!draft.tracks.length || draft.tracks.some(track => !track.url)) return toast("Every track needs a URL", true);
+      if (draft.tracks.some(track => !validSourceUrl(track.url))) return toast("Use a valid HTTP or HTTPS audio URL", true);
+      if (draft.tracks.some(track => track.kind === "youtube" && !youtubeId(track.url))) return toast("Use a valid YouTube URL", true);
+      if (!validScene(draft)) return toast("Check the scene fields and track settings", true);
       library = existing ? { ...library, scenes: library.scenes.map(scene => scene.id === existing.id ? draft : scene) } : { ...library, scenes: [...library.scenes, draft] };
       dialog.close(); await persist();
       if (isActive(draft.id)) await publish({ ...playback, active: playback.active.map(item => item.scene.id === draft.id ? { ...item, scene: draft } : item) });
@@ -375,7 +405,7 @@ function openSceneDialog(existing?: Scene) {
 
 function trackRow(track: Track, index: number) {
   return `<div class="track-row" data-track-row="${index}">
-    <div class="track-number">${index + 1}</div><div class="track-main"><div class="track-top"><input data-field="name" value="${esc(track.name)}" placeholder="Name"><select data-field="kind"><option value="auto" ${track.kind === "auto" ? "selected" : ""}>Auto</option><option value="audio" ${track.kind === "audio" ? "selected" : ""}>Audio file</option><option value="youtube" ${track.kind === "youtube" ? "selected" : ""}>YouTube</option></select><button type="button" data-remove-track="${index}">×</button></div><input data-field="url" class="url" value="${esc(track.url)}" placeholder="https://…"></div>
+    <div class="track-number">${index + 1}</div><div class="track-main"><div class="track-top"><input data-field="name" maxlength="80" value="${esc(track.name)}" placeholder="Name"><select data-field="kind"><option value="auto" ${track.kind === "auto" ? "selected" : ""}>Auto</option><option value="audio" ${track.kind === "audio" ? "selected" : ""}>Audio file</option><option value="youtube" ${track.kind === "youtube" ? "selected" : ""}>YouTube</option></select><button type="button" data-remove-track="${index}">×</button></div><input data-field="url" class="url" maxlength="2048" value="${esc(track.url)}" placeholder="https://…"></div>
     <div class="track-options"><label>Volume ${numberInput(`data-field="volume" min="0" max="100" value="${track.volume}"`, "Track volume")}</label><label class="check"><input data-field="muted" type="checkbox" ${track.muted ? "checked" : ""}> Mute</label><label class="check"><input data-field="loop" type="checkbox" ${track.loop ? "checked" : ""}> Loop</label><label>Delay ${numberInput(`data-field="delayMin" min="0" max="3600" value="${track.delayMin}"`, "Minimum delay")}—${numberInput(`data-field="delayMax" min="0" max="3600" value="${track.delayMax}"`, "Maximum delay")} sec.</label></div>
   </div>`;
 }
@@ -413,7 +443,7 @@ function openDeleteAllDialog() {
     selectedFolder = library.folders[0].id;
     previewSceneId = null;
     dialog.close();
-    await OBR.broadcast.sendMessage(LOCAL_CHANNEL, { type: "STOP_PREVIEW" } satisfies LocalMessage, { destination: "LOCAL" });
+    await sendLocal({ type: "STOP_PREVIEW" });
     await persist();
     if (playback.active.length) await publish({ ...playback, active: [], status: "playing", pausedAt: undefined });
     toast("Library cleared");
@@ -429,6 +459,7 @@ function exportLibrary() {
 
 async function importLibrary(file?: File) {
   if (!file) return;
+  if (file.size > MAX_IMPORT_BYTES) return toast("This library is too large. The maximum import size is 5 MB.", true);
   try {
     const parsed = parseImportedLibrary(JSON.parse(await file.text()));
     const data = parsed.library;
@@ -449,19 +480,14 @@ async function startOwlbear() {
     await saveLibrary(library);
   }
   selectedFolder = library.folders[0]?.id || "";
-  const metadata = await OBR.room.getMetadata();
-  const saved = metadata[STATE_KEY] as PlaybackState | undefined;
-  if (saved?.version === 1) playback = saved;
-  OBR.room.onMetadataChange(next => {
-    const state = next[STATE_KEY] as PlaybackState | undefined;
-    if (state?.version === 1 && state.revision >= playback.revision) { playback = state; render(); }
-  });
   OBR.broadcast.onMessage(CHANNEL, ({ data }) => {
-    const message = data as SyncMessage;
+    if (!validSyncMessage(data)) return;
+    const message = data;
     if (message.type === "STATE" && message.state.revision >= playback.revision) { playback = message.state; render(); }
   });
   render();
   void setMaster(master.volume, master.muted);
+  void OBR.broadcast.sendMessage(CHANNEL, { type: "REQUEST_STATE" } satisfies SyncMessage, { destination: "ALL" });
 }
 
 if (new URLSearchParams(location.search).has("preview")) {

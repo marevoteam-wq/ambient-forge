@@ -1,4 +1,4 @@
-import { Library, Scene, Track, validLibrary } from "./model";
+import { LIBRARY_LIMITS, Library, Scene, Track, validLibrary, validSourceUrl } from "./model";
 
 type JsonRecord = Record<string, unknown>;
 
@@ -11,8 +11,8 @@ function record(value: unknown): JsonRecord | null {
   return value && typeof value === "object" && !Array.isArray(value) ? value as JsonRecord : null;
 }
 
-function text(value: unknown, fallback: string): string {
-  return typeof value === "string" && value.trim() ? value.trim() : fallback;
+function text(value: unknown, fallback: string, maxLength: number = LIBRARY_LIMITS.nameLength): string {
+  return typeof value === "string" && value.trim() ? value.trim().slice(0, maxLength) : fallback;
 }
 
 function number(value: unknown, fallback: number, min = 0, max = 100): number {
@@ -25,14 +25,14 @@ function boolean(value: unknown, fallback: boolean): boolean {
 }
 
 function stableId(prefix: string, ...parts: unknown[]): string {
-  return `${prefix}-${parts.map(part => String(part).replace(/[^a-z0-9_-]+/gi, "-")).join("-")}`;
+  return `${prefix}-${parts.map(part => String(part).replace(/[^a-z0-9_-]+/gi, "-")).join("-")}`.slice(0, LIBRARY_LIMITS.idLength);
 }
 
 function convertDjinniTrack(value: unknown, folderId: string, sceneId: string, index: number, sceneMuted: boolean): Track | null {
   const track = record(value);
   if (!track) return null;
-  const url = text(track.link, "");
-  if (!url) return null;
+  const url = text(track.link, "", LIBRARY_LIMITS.urlLength);
+  if (!validSourceUrl(url)) return null;
   return {
     id: stableId("djinni-track", folderId, sceneId, track.id ?? index),
     name: text(track.name, `Track ${index + 1}`),
@@ -52,7 +52,7 @@ function convertDjinniScene(value: unknown, folderId: string, color: string, ind
   const sceneId = stableId("djinni-scene", folderId, stream.id ?? index);
   const sceneMuted = boolean(stream.streamMute, false);
   const tracks = Array.isArray(stream.streamData)
-    ? stream.streamData.map((track, trackIndex) => convertDjinniTrack(track, folderId, sceneId, trackIndex, sceneMuted)).filter((track): track is Track => !!track)
+    ? stream.streamData.slice(0, LIBRARY_LIMITS.tracksPerScene).map((track, trackIndex) => convertDjinniTrack(track, folderId, sceneId, trackIndex, sceneMuted)).filter((track): track is Track => !!track)
     : [];
   if (!tracks.length) return null;
   const fade = boolean(stream.streamFade, false) ? number(stream.streamFadeTime, 0, 0, 30) : 0;
@@ -60,7 +60,7 @@ function convertDjinniScene(value: unknown, folderId: string, color: string, ind
     id: sceneId,
     folderId,
     name: text(stream.streamName, `Scene ${index + 1}`),
-    icon: text(stream.streamIcon, "♫"),
+    icon: text(stream.streamIcon, "♫", LIBRARY_LIMITS.iconLength),
     color,
     volume: number(stream.streamVolume, 100),
     fadeIn: fade,
@@ -77,6 +77,7 @@ function convertDjinni(value: unknown): Library | null {
   const seenSourceIds = new Set<string>();
 
   Object.entries(source).forEach(([key, value]) => {
+    if (folders.length >= LIBRARY_LIMITS.folders || scenes.length >= LIBRARY_LIMITS.scenes) return;
     const folder = record(value);
     if (!folder || !Array.isArray(folder.streams) || typeof folder.folderName !== "string") return;
     const sourceId = String(folder.id ?? key);
@@ -85,13 +86,14 @@ function convertDjinni(value: unknown): Library | null {
     const id = stableId("djinni-folder", sourceId);
     const color = /^#[0-9a-f]{6}$/i.test(String(folder.folderColor || "")) ? String(folder.folderColor) : "#8b6ff7";
     folders.push({ id, name: text(folder.folderName, `Folder ${folders.length + 1}`), color });
-    folder.streams.forEach((stream, index) => {
+    folder.streams.slice(0, LIBRARY_LIMITS.scenes - scenes.length).forEach((stream, index) => {
       const scene = convertDjinniScene(stream, id, color, index);
       if (scene) scenes.push(scene);
     });
   });
 
-  return folders.length ? { version: 1, folders, scenes } : null;
+  const library: Library = { version: 1, folders, scenes };
+  return folders.length && scenes.length && validLibrary(library) ? library : null;
 }
 
 export function parseImportedLibrary(value: unknown): ImportedLibrary {

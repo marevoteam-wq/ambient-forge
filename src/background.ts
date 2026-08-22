@@ -1,7 +1,7 @@
 import OBR from "@owlbear-rodeo/sdk";
 import {
-  CHANNEL, LOCAL_CHANNEL, STATE_KEY, ActiveScene, LocalMessage, PlaybackState,
-  Scene, SyncMessage, Track, emptyState, sourceKind, youtubeId,
+  CHANNEL, LOCAL_CHANNEL, ActiveScene, PlaybackState, Scene, SyncMessage, Track,
+  emptyState, sourceKind, validLocalMessage, validSyncMessage, youtubeId,
 } from "./model";
 
 interface YTPlayer {
@@ -58,7 +58,9 @@ let audioUnlocked = false;
 function loadMaster() {
   try {
     const value = JSON.parse(localStorage.getItem("ambient-forge-master") || "null") as typeof master | null;
-    if (value) master = value;
+    if (value && typeof value.volume === "number" && value.volume >= 0 && value.volume <= 100 && typeof value.muted === "boolean") {
+      master = value;
+    }
   } catch { /* ignored */ }
   masterLevel = master.muted ? 0 : master.volume / 100;
 }
@@ -369,27 +371,21 @@ OBR.onReady(async () => {
   audioUnlocked = false;
   loadMaster();
   role = await OBR.player.getRole();
-  const metadata = await OBR.room.getMetadata();
-  const saved = metadata[STATE_KEY] as PlaybackState | undefined;
-  if (saved?.version === 1) reconcile(saved, true);
-
-  OBR.room.onMetadataChange((next) => {
-    const state = next[STATE_KEY] as PlaybackState | undefined;
-    if (state?.version === 1 && state.revision >= current.revision) reconcile(state);
-  });
   OBR.broadcast.onMessage(CHANNEL, ({ data }) => {
-    const message = data as SyncMessage;
+    if (!validSyncMessage(data)) return;
+    const message = data;
     if (message.type === "STATE" && message.state.revision >= current.revision) reconcile(message.state);
     if (message.type === "REQUEST_STATE" && role === "GM") {
-      void OBR.broadcast.sendMessage(CHANNEL, { type: "STATE", state: current } satisfies SyncMessage, { destination: "REMOTE" });
+      void OBR.broadcast.sendMessage(CHANNEL, { type: "STATE", state: current } satisfies SyncMessage, { destination: "ALL" });
     }
   });
   OBR.broadcast.onMessage(LOCAL_CHANNEL, ({ data }) => {
-    const message = data as LocalMessage;
+    if (!validLocalMessage(data)) return;
+    const message = data;
     if (message.type === "UNLOCK") void unlock();
     if (message.type === "PREVIEW") previewScene(message.scene);
     if (message.type === "STOP_PREVIEW") stopPreview();
     if (message.type === "MASTER") rampMaster({ volume: message.volume, muted: message.muted });
   });
-  void OBR.broadcast.sendMessage(CHANNEL, { type: "REQUEST_STATE" } satisfies SyncMessage, { destination: "REMOTE" });
+  void OBR.broadcast.sendMessage(CHANNEL, { type: "REQUEST_STATE" } satisfies SyncMessage, { destination: "ALL" });
 });

@@ -1,7 +1,7 @@
 {
   "name": "owlbear-ambient-forge",
   "private": true,
-  "version": "0.1.5",
+  "version": "0.1.6",
   "description": "Synchronized sound scene mixer for Owlbear Rodeo",
   "author": "Marevo",
   "license": "MIT",
@@ -17,7 +17,9 @@
   "scripts": {
     "dev": "vite --configLoader runner",
     "build": "tsc && vite build --configLoader runner",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test": "vitest run",
+    "check": "npm run test && npm run build"
   },
   "dependencies": {
     "@owlbear-rodeo/sdk": "^3.1.0",
@@ -26,6 +28,7 @@
   },
   "devDependencies": {
     "typescript": "^5.7.2",
-    "vite": "^6.0.5"
+    "vite": "^6.0.5",
+    "vitest": "^3.2.7"
   }
 }

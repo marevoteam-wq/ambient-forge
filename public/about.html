@@ -80,9 +80,6 @@
     <section id="support"><div class="shell support-panel"><div class="support-icon" aria-hidden="true">☕</div><div class="support-copy"><span class="section-label">Support Marevo</span><h2>Help us keep building for Owlbear Rodeo</h2><p>We are a small team that loves playing on Owlbear Rodeo and creating useful extensions for the community. If Ambient Forge helps your games, you can support our next update on Ko-fi.</p></div><a class="button kofi-button" href="https://ko-fi.com/marevo" target="_blank" rel="noreferrer">Support us on Ko-fi ↗</a></div></section>
   </main>
   <footer><div class="shell footer-row"><span>Ambient Forge by Marevo · Built with love for Owlbear Rodeo</span><span>Need help? Visit <a href="https://github.com/marevoteam-wq/ambient-forge/issues" rel="noreferrer">GitHub Issues</a>.</span></div></footer>
-  <script>
-    const manifestUrl="https://ambient-forge.marevo.workers.dev/manifest.json";
-    for(const button of document.querySelectorAll("[data-copy-manifest]")){button.addEventListener("click",async()=>{const original=button.textContent;try{await navigator.clipboard.writeText(manifestUrl);button.textContent="Copied!"}catch{window.prompt("Copy the Ambient Forge install link:",manifestUrl)}window.setTimeout(()=>{button.textContent=original},1800)})}
-  </script>
+  <script src="/about.js"></script>
 </body>
 </html>
