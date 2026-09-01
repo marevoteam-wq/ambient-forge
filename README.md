@@ -19,6 +19,7 @@ Learn more at [ambient-forge.marevo.workers.dev/about](https://ambient-forge.mar
 - Layer multiple tracks in a single sound scene.
 - Organize scenes into colored folders with custom emoji icons.
 - Play direct MP3, OGG, WAV, and YouTube sources.
+- Paste public Dropbox share links without manually changing their URL parameters.
 - Control master, scene, and individual track volume.
 - Pause and resume without restarting a scene.
 - Configure looping, randomized repeat delays, fade in, and fade out.
@@ -55,4 +56,3 @@ Report bugs or suggest features in [GitHub Issues](https://github.com/marevoteam
 ## License
 
 Ambient Forge is maintained by **Marevo** and released under the [MIT License](LICENSE).
-

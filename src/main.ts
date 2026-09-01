@@ -4,7 +4,7 @@ import emojiDataUrl from "emoji-picker-element-data/en/emojibase/data.json?url";
 import "./style.css";
 import {
   CHANNEL, LOCAL_CHANNEL, LIBRARY_LIMITS, Folder, Library, LocalMessage, PlaybackState,
-  Scene, SourceKind, SyncMessage, Track, emptyState, starterLibrary, validLocalMessage, validScene, validSourceUrl, validSyncMessage, youtubeId,
+  Scene, SourceKind, SyncMessage, Track, emptyState, normalizeAudioUrl, starterLibrary, validLocalMessage, validScene, validSourceUrl, validSyncMessage, youtubeId,
 } from "./model";
 import { parseImportedLibrary } from "./importer";
 import { loadLibrary, saveLibrary } from "./storage";
@@ -18,6 +18,8 @@ let master = { volume: 80, muted: false };
 let audioEnabled = false;
 let previewSceneId: string | null = null;
 let foldersCollapsed = false;
+let masterSendFrame: number | undefined;
+let masterRevision = Date.now() * 1000;
 const MAX_IMPORT_BYTES = 5 * 1024 * 1024;
 
 try {
@@ -140,10 +142,36 @@ async function toggleScenePause(sceneId: string) {
   });
 }
 
-async function setMaster(volume: number, muted = master.muted) {
-  master = { volume, muted };
+function updateMasterControls() {
+  const silent = master.muted || master.volume === 0;
+  const mute = document.getElementById("mute") as HTMLButtonElement | null;
+  if (mute) {
+    mute.textContent = silent ? "🔇" : "🔊";
+    mute.title = master.muted ? "Unmute master volume" : "Mute master volume";
+  }
+  const input = document.getElementById("master-volume") as HTMLInputElement | null;
+  if (input) {
+    input.value = String(master.volume);
+    input.style.setProperty("--range-value", `${master.volume}%`);
+  }
+  const label = document.querySelector<HTMLElement>(".volume-value");
+  if (label) label.textContent = `${master.volume}%`;
+}
+
+function queueMasterSync() {
+  if (masterSendFrame !== undefined) return;
+  masterSendFrame = requestAnimationFrame(() => {
+    masterSendFrame = undefined;
+    const revision = ++masterRevision;
+    void sendLocal({ type: "MASTER", ...master, revision });
+  });
+}
+
+function setMaster(volume: number, muted = master.muted) {
+  master = { volume: Math.max(0, Math.min(100, volume)), muted };
   localStorage.setItem("ambient-forge-master", JSON.stringify(master));
-  await sendLocal({ type: "MASTER", ...master });
+  updateMasterControls();
+  queueMasterSync();
 }
 
 async function enableAudio() {
@@ -153,7 +181,32 @@ async function enableAudio() {
   toast("Audio enabled in this browser");
 }
 
+type RenderViewState = {
+  windowX: number;
+  windowY: number;
+  scenesTop: number;
+  foldersTop: number;
+};
+
+function captureRenderView(): RenderViewState {
+  return {
+    windowX: window.scrollX,
+    windowY: window.scrollY,
+    scenesTop: document.querySelector<HTMLElement>(".scenes")?.scrollTop || 0,
+    foldersTop: document.querySelector<HTMLElement>(".folder-list")?.scrollTop || 0,
+  };
+}
+
+function restoreRenderView(view: RenderViewState) {
+  const scenes = document.querySelector<HTMLElement>(".scenes");
+  if (scenes) scenes.scrollTop = view.scenesTop;
+  const folders = document.querySelector<HTMLElement>(".folder-list");
+  if (folders) folders.scrollTop = view.foldersTop;
+  window.scrollTo(view.windowX, view.windowY);
+}
+
 function render() {
+  const view = captureRenderView();
   if (!selectedFolder || !library.folders.some(folder => folder.id === selectedFolder)) selectedFolder = library.folders[0]?.id || "";
   const currentFolder = library.folders.find(folder => folder.id === selectedFolder);
   const scenes = library.scenes.filter(scene => scene.folderId === selectedFolder);
@@ -174,7 +227,7 @@ function render() {
       </header>
       <section class="mixerbar">
         <div class="now-playing ${playback.active.length ? "" : "empty"}"><span class="pulse"></span><strong>${playback.status === "paused" ? "Paused:" : "Now playing:"}</strong><span class="now-playing-value">${activeNames.length ? activeNames.map(esc).join(" · ") : "Nothing"}</span></div>
-        <div class="master-volume"><button class="mute" id="mute" title="Mute master volume">${master.muted ? "🔇" : "🔊"}</button><input id="master-volume" aria-label="Master volume" type="range" min="0" max="100" value="${master.volume}" style="--range-value:${master.volume}%"><span class="volume-value">${master.volume}%</span></div>
+        <div class="master-volume"><button class="mute" id="mute" title="${master.muted ? "Unmute" : "Mute"} master volume">${master.muted || master.volume === 0 ? "🔇" : "🔊"}</button><input id="master-volume" aria-label="Master volume" type="range" min="0" max="100" value="${master.volume}" style="--range-value:${master.volume}%"><span class="volume-value">${master.volume}%</span></div>
         ${isGm ? `<div class="scope"><button data-scope="GLOBAL" class="${playback.scope === "GLOBAL" ? "active" : ""}">🌐 Everyone</button><button data-scope="LOCAL" class="${playback.scope === "LOCAL" ? "active" : ""}">🎧 Only me</button></div>` : `<span class="scope-label">${playback.scope === "GLOBAL" ? "The GM is broadcasting audio" : "The GM is playing audio locally"}</span>`}
       </section>
       ${isGm ? `
@@ -195,6 +248,7 @@ function render() {
 
   wireCommon();
   if (isGm) wireGm();
+  restoreRenderView(view);
 }
 
 function playerView() {
@@ -215,17 +269,10 @@ function sceneCard(scene: Scene) {
 
 function wireCommon() {
   byId<HTMLButtonElement>("unlock").onclick = () => void enableAudio();
-  byId<HTMLButtonElement>("mute").onclick = () => {
-    void setMaster(master.volume, !master.muted);
-    render();
-  };
+  byId<HTMLButtonElement>("mute").onclick = () => setMaster(master.volume, !master.muted);
   byId<HTMLInputElement>("master-volume").oninput = event => {
     const input = event.target as HTMLInputElement;
-    const volume = Number(input.value);
-    input.style.setProperty("--range-value", `${volume}%`);
-    const label = document.querySelector<HTMLElement>(".volume-value");
-    if (label) label.textContent = `${volume}%`;
-    void setMaster(volume);
+    setMaster(Number(input.value));
   };
 }
 
@@ -341,12 +388,13 @@ function openSceneDialog(existing?: Scene) {
   let draft: Scene = existing ? structuredClone(existing) : {
     id: crypto.randomUUID(), folderId: selectedFolder, name: "New scene", icon: "♫", color: library.folders.find(f => f.id === selectedFolder)?.color || "#8b6ff7", volume: 80, fadeIn: 0, fadeOut: 3, tracks: [newTrack()],
   };
+  for (const track of draft.tracks) track.url = normalizeAudioUrl(track.url);
   const dialog = dialogShell(existing ? "Edit scene" : "New sound scene", `<div id="scene-editor"></div>`, true);
   const draw = () => {
     byId<HTMLDivElement>("scene-editor").innerHTML = `
       <div class="scene-fields">${emojiField("scene-icon", draft.icon, "Icon")}<label>Name<input id="scene-name" maxlength="50" value="${esc(draft.name)}"></label><label>Color<input id="scene-color" type="color" value="${draft.color}"></label></div>
       <div class="settings-row"><label>Volume <b id="scene-volume-value">${draft.volume}%</b><input id="scene-volume-input" type="range" min="0" max="100" value="${draft.volume}" style="--range-value:${draft.volume}%"></label><label>Fade in, sec.${numberInput(`id="fade-in" min="0" max="30" step="0.5" value="${draft.fadeIn}"`, "Fade in")}</label><label>Fade out, sec.${numberInput(`id="fade-out" min="0" max="30" step="0.5" value="${draft.fadeOut}"`, "Fade out")}</label></div>
-      <div class="tracks-title"><div><strong>Tracks</strong><span>MP3, OGG, WAV, or YouTube</span></div><button type="button" id="add-track" class="secondary">${plusIcon}<span>Add track</span></button></div>
+      <div class="tracks-title"><div><strong>Tracks</strong><span>MP3, OGG, WAV, Dropbox, or YouTube</span></div><button type="button" id="add-track" class="secondary">${plusIcon}<span>Add track</span></button></div>
       <div class="track-list">${draft.tracks.map((track, index) => trackRow(track, index)).join("")}</div>
       <div class="dialog-actions"><span></span><button value="cancel" class="secondary">Cancel</button><button type="button" id="save-scene" class="primary">Save scene</button></div>`;
     wireDraft();
@@ -373,6 +421,17 @@ function openSceneDialog(existing?: Scene) {
   const wireDraft = () => {
     wireEmojiPickers(dialog);
     wireNumberSteppers(dialog);
+    const normalizeUrlInput = (input: HTMLInputElement) => {
+      const before = input.value.trim();
+      const normalized = normalizeAudioUrl(before);
+      if (normalized === before) return;
+      input.value = normalized;
+      toast("Dropbox link prepared for playback");
+    };
+    document.querySelectorAll<HTMLInputElement>("[data-field=url]").forEach(input => {
+      input.addEventListener("change", () => normalizeUrlInput(input));
+      input.addEventListener("paste", () => window.setTimeout(() => normalizeUrlInput(input), 0));
+    });
     byId<HTMLInputElement>("scene-volume-input").oninput = event => {
       const input = event.target as HTMLInputElement;
       input.style.setProperty("--range-value", `${input.value}%`);
@@ -392,12 +451,19 @@ function openSceneDialog(existing?: Scene) {
       syncDraft(); draft.name = draft.name.trim();
       if (!draft.name) return toast("Enter a scene name", true);
       if (!draft.tracks.length || draft.tracks.some(track => !track.url)) return toast("Every track needs a URL", true);
+      let normalizedDropboxLinks = 0;
+      for (const track of draft.tracks) {
+        const normalized = normalizeAudioUrl(track.url);
+        if (normalized !== track.url) normalizedDropboxLinks += 1;
+        track.url = normalized;
+      }
       if (draft.tracks.some(track => !validSourceUrl(track.url))) return toast("Use a valid HTTP or HTTPS audio URL", true);
       if (draft.tracks.some(track => track.kind === "youtube" && !youtubeId(track.url))) return toast("Use a valid YouTube URL", true);
       if (!validScene(draft)) return toast("Check the scene fields and track settings", true);
       library = existing ? { ...library, scenes: library.scenes.map(scene => scene.id === existing.id ? draft : scene) } : { ...library, scenes: [...library.scenes, draft] };
       dialog.close(); await persist();
       if (isActive(draft.id)) await publish({ ...playback, active: playback.active.map(item => item.scene.id === draft.id ? { ...item, scene: draft } : item) });
+      if (normalizedDropboxLinks > 0) toast("Dropbox link prepared for playback");
     };
   };
   draw();
@@ -486,7 +552,7 @@ async function startOwlbear() {
     if (message.type === "STATE" && message.state.revision >= playback.revision) { playback = message.state; render(); }
   });
   render();
-  void setMaster(master.volume, master.muted);
+  setMaster(master.volume, master.muted);
   void OBR.broadcast.sendMessage(CHANNEL, { type: "REQUEST_STATE" } satisfies SyncMessage, { destination: "ALL" });
 }
 

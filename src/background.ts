@@ -1,7 +1,7 @@
 import OBR from "@owlbear-rodeo/sdk";
 import {
   CHANNEL, LOCAL_CHANNEL, ActiveScene, PlaybackState, Scene, SyncMessage, Track,
-  emptyState, sourceKind, validLocalMessage, validSyncMessage, youtubeId,
+  emptyState, masterShouldMute, normalizeAudioUrl, sourceKind, validLocalMessage, validSyncMessage, youtubeId,
 } from "./model";
 
 interface YTPlayer {
@@ -25,6 +25,7 @@ type Runtime = {
   host?: HTMLDivElement;
   fade?: number;
   retry?: number;
+  settle?: number;
   ready: boolean;
   gain: number;
   paused: boolean;
@@ -52,6 +53,7 @@ let previewRevision = 0;
 let master = { volume: 80, muted: false };
 let masterLevel = 0.8;
 let masterFade: number | undefined;
+let lastMasterRevision = 0;
 let ytReady: Promise<void> | null = null;
 let audioUnlocked = false;
 
@@ -63,6 +65,12 @@ function loadMaster() {
     }
   } catch { /* ignored */ }
   masterLevel = master.muted ? 0 : master.volume / 100;
+}
+
+function trackSource(track: Track): string {
+  const kind = sourceKind(track);
+  const url = kind === "audio" ? normalizeAudioUrl(track.url) : track.url.trim();
+  return `${kind}:${url}`;
 }
 
 function ensureYouTube(): Promise<void> {
@@ -89,7 +97,7 @@ function runtimeVolume(runtime: Runtime): number {
 function applyVolume(runtime: Runtime) {
   if (runtime.destroyed) return;
   const volume = runtimeVolume(runtime);
-  const muted = runtime.track.muted || (master.muted && masterLevel <= 0.001);
+  const muted = runtime.track.muted || masterShouldMute(master, masterLevel);
   if (runtime.audio) {
     runtime.audio.volume = volume;
     runtime.audio.muted = muted;
@@ -156,12 +164,12 @@ function scheduleRandomRepeat(runtime: Runtime) {
 }
 
 function createAudio(scene: Scene, track: Track, startedAt: number, key: string, previewMode: boolean, paused: boolean): Runtime {
-  const audio = new Audio(track.url);
+  const audio = new Audio(normalizeAudioUrl(track.url));
   audio.preload = "auto";
   audio.loop = track.loop && track.delayMax === 0;
   const runtime: Runtime = {
     key, scene, track, startedAt, preview: previewMode,
-    source: `${sourceKind(track)}:${track.url}`, audio, ready: false,
+    source: trackSource(track), audio, ready: false,
     gain: 1, paused, retiring: false, destroyed: false,
   };
   audio.addEventListener("loadedmetadata", () => {
@@ -185,7 +193,7 @@ async function createYouTube(scene: Scene, track: Track, startedAt: number, key:
   document.getElementById("audio-root")?.append(host);
   const runtime: Runtime = {
     key, scene, track, startedAt, preview: previewMode,
-    source: `${sourceKind(track)}:${track.url}`, host, ready: false,
+    source: trackSource(track), host, ready: false,
     gain: 1, paused, retiring: false, destroyed: false,
   };
   runtime.player = new window.YT!.Player(host, {
@@ -216,17 +224,19 @@ function requestIsCurrent(request: PendingRuntime): boolean {
   if (request.preview) {
     return request.previewRevision === previewRevision
       && preview?.id === request.active.scene.id
-      && preview.tracks.some(track => track.id === request.track.id && `${sourceKind(track)}:${track.url}` === request.source);
+      && preview.tracks.some(track => track.id === request.track.id && trackSource(track) === request.source);
   }
   const allowed = current.scope === "GLOBAL" || role === "GM";
   if (!allowed) return false;
   const active = current.active.find(item => item.scene.id === request.active.scene.id && item.startedAt === request.active.startedAt);
   const track = active?.scene.tracks.find(item => item.id === request.track.id);
-  return !!track && `${sourceKind(track)}:${track.url}` === request.source;
+  return !!track && trackSource(track) === request.source;
 }
 
 function fade(runtime: Runtime, from: number, to: number, duration: number, done?: () => void) {
   if (runtime.fade) clearInterval(runtime.fade);
+  if (runtime.settle) clearTimeout(runtime.settle);
+  runtime.settle = undefined;
   runtime.gain = from;
   applyVolume(runtime);
   const began = performance.now();
@@ -238,7 +248,20 @@ function fade(runtime: Runtime, from: number, to: number, duration: number, done
       if (runtime.fade) clearInterval(runtime.fade);
       runtime.fade = undefined;
       runtime.gain = to;
-      done?.();
+      applyVolume(runtime);
+      if (to <= 0) {
+        if (runtime.audio) {
+          runtime.audio.volume = 0;
+          runtime.audio.muted = true;
+        }
+        if (runtime.player) {
+          try { runtime.player.setVolume(0); runtime.player.mute(); } catch { /* player may still be initializing */ }
+        }
+        runtime.settle = window.setTimeout(() => {
+          runtime.settle = undefined;
+          done?.();
+        }, 80);
+      } else done?.();
     }
   }, 40);
 }
@@ -248,6 +271,7 @@ function destroy(runtime: Runtime) {
   runtime.destroyed = true;
   if (runtime.fade) clearInterval(runtime.fade);
   if (runtime.retry) clearTimeout(runtime.retry);
+  if (runtime.settle) clearTimeout(runtime.settle);
   runtime.audio?.pause();
   runtime.audio?.removeAttribute("src");
   try { runtime.player?.destroy(); } catch { /* player may not have finished initializing */ }
@@ -276,7 +300,7 @@ function activateRuntime(runtime: Runtime) {
 function ensureRuntime(active: ActiveScene, track: Track, previewMode = false, session = 0) {
   const key = `${previewMode ? "preview" : active.scene.id}:${track.id}`;
   if (!track.url.trim()) return;
-  const source = `${sourceKind(track)}:${track.url}`;
+  const source = trackSource(track);
   const pending = pendingRuntimes.get(key);
   if (pending && pending.active.startedAt === active.startedAt && pending.source === source && pending.previewRevision === session) return;
   const request: PendingRuntime = {
@@ -315,7 +339,7 @@ function reconcile(state: PlaybackState, immediate = false) {
   const allowed = state.scope === "GLOBAL" || role === "GM";
   const desired = new Map<string, { active: ActiveScene; track: Track; source: string }>();
   if (allowed) for (const active of state.active) for (const track of active.scene.tracks) {
-    desired.set(`${active.scene.id}:${track.id}`, { active, track, source: `${sourceKind(track)}:${track.url}` });
+    desired.set(`${active.scene.id}:${track.id}`, { active, track, source: trackSource(track) });
   }
   for (const [key] of pendingRuntimes) {
     if (!key.startsWith("preview:") && !desired.has(key)) pendingRuntimes.delete(key);
@@ -385,7 +409,12 @@ OBR.onReady(async () => {
     if (message.type === "UNLOCK") void unlock();
     if (message.type === "PREVIEW") previewScene(message.scene);
     if (message.type === "STOP_PREVIEW") stopPreview();
-    if (message.type === "MASTER") rampMaster({ volume: message.volume, muted: message.muted });
+    if (message.type === "MASTER") {
+      if (message.revision === undefined && lastMasterRevision > 0) return;
+      if (message.revision !== undefined && message.revision <= lastMasterRevision) return;
+      if (message.revision !== undefined) lastMasterRevision = message.revision;
+      rampMaster({ volume: message.volume, muted: message.muted });
+    }
   });
   void OBR.broadcast.sendMessage(CHANNEL, { type: "REQUEST_STATE" } satisfies SyncMessage, { destination: "ALL" });
 });

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  LIBRARY_LIMITS, MAX_SYNC_MESSAGE_BYTES, Library, PlaybackState, Scene, syncMessageSize,
+  LIBRARY_LIMITS, MAX_SYNC_MESSAGE_BYTES, Library, PlaybackState, Scene, masterShouldMute, normalizeAudioUrl, syncMessageSize,
   validLibrary, validLocalMessage, validPlaybackState, validSourceUrl, validSyncMessage,
 } from "./model";
 
@@ -35,6 +35,36 @@ describe("library validation", () => {
   });
 });
 
+describe("audio URL normalization", () => {
+  it("converts Dropbox share links to direct browser-renderable URLs", () => {
+    expect(normalizeAudioUrl("https://www.dropbox.com/scl/fi/token/rain.mp3?rlkey=secret&dl=0"))
+      .toBe("https://www.dropbox.com/scl/fi/token/rain.mp3?rlkey=secret&raw=1");
+    expect(normalizeAudioUrl("https://www.dropbox.com/s/legacy/rain.ogg?dl=1"))
+      .toBe("https://www.dropbox.com/s/legacy/rain.ogg?raw=1");
+    expect(normalizeAudioUrl("https://www.dropbox.com/scl/fi/token/rain.wav?rlkey=secret&st=tracking&dl=0"))
+      .toBe("https://www.dropbox.com/scl/fi/token/rain.wav?rlkey=secret&st=tracking&raw=1");
+  });
+
+  it("leaves non-Dropbox and direct Dropbox content URLs unchanged", () => {
+    expect(normalizeAudioUrl("https://cdn.example.com/rain.mp3")).toBe("https://cdn.example.com/rain.mp3");
+    expect(normalizeAudioUrl("https://dl.dropboxusercontent.com/content/rain.mp3"))
+      .toBe("https://dl.dropboxusercontent.com/content/rain.mp3");
+  });
+});
+
+describe("master volume", () => {
+  it("hard-mutes a completed zero-volume or mute ramp", () => {
+    expect(masterShouldMute({ volume: 0, muted: false }, 0)).toBe(true);
+    expect(masterShouldMute({ volume: 80, muted: true }, 0)).toBe(true);
+  });
+
+  it("keeps the short ramp audible until it reaches silence", () => {
+    expect(masterShouldMute({ volume: 0, muted: false }, 0.2)).toBe(false);
+    expect(masterShouldMute({ volume: 80, muted: true }, 0.2)).toBe(false);
+    expect(masterShouldMute({ volume: 1, muted: false }, 0.01)).toBe(false);
+  });
+});
+
 describe("message validation", () => {
   it("accepts valid playback and sync messages", () => {
     expect(validPlaybackState(playback)).toBe(true);
@@ -46,6 +76,11 @@ describe("message validation", () => {
     expect(validSyncMessage({ type: "STATE", state: { ...playback, revision: -1 } })).toBe(false);
     expect(validLocalMessage({ type: "MASTER", volume: 500, muted: false })).toBe(false);
     expect(validLocalMessage({ type: "PREVIEW", scene: { ...scene, tracks: [] } })).toBe(false);
+    expect(validLocalMessage({ type: "MASTER", volume: 50, muted: false, revision: -1 })).toBe(false);
+  });
+
+  it("accepts ordered master-volume messages", () => {
+    expect(validLocalMessage({ type: "MASTER", volume: 0, muted: false, revision: 123 })).toBe(true);
   });
 
   it("rejects messages above Owlbear Rodeo's 16KB broadcast limit", () => {

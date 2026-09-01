@@ -71,12 +71,17 @@ export interface PlaybackState {
   active: ActiveScene[];
 }
 
+export interface MasterSettings {
+  volume: number;
+  muted: boolean;
+}
+
 export type SyncMessage = { type: "STATE"; state: PlaybackState } | { type: "REQUEST_STATE" };
 export type LocalMessage =
   | { type: "UNLOCK" }
   | { type: "PREVIEW"; scene: Scene }
   | { type: "STOP_PREVIEW" }
-  | { type: "MASTER"; volume: number; muted: boolean };
+  | { type: "MASTER"; volume: number; muted: boolean; revision?: number };
 
 export const emptyState = (): PlaybackState => ({
   version: 1,
@@ -102,6 +107,26 @@ export function sourceKind(track: Track): "audio" | "youtube" {
     const hostname = new URL(track.url).hostname.toLowerCase();
     return hostname === "youtu.be" || hostname === "youtube.com" || hostname.endsWith(".youtube.com") ? "youtube" : "audio";
   } catch { return "audio"; }
+}
+
+export function normalizeAudioUrl(value: string): string {
+  const trimmed = value.trim();
+  try {
+    const url = new URL(trimmed);
+    const hostname = url.hostname.toLowerCase();
+    if (hostname === "dropbox.com" || hostname === "www.dropbox.com") {
+      url.searchParams.delete("dl");
+      url.searchParams.set("raw", "1");
+      return url.toString();
+    }
+  } catch {
+    // Validation reports malformed URLs; normalization stays lossless.
+  }
+  return trimmed;
+}
+
+export function masterShouldMute(master: MasterSettings, level: number): boolean {
+  return (master.muted || master.volume === 0) && level <= 0.001;
 }
 
 export function validSourceUrl(value: unknown): value is string {
@@ -257,5 +282,7 @@ export function validLocalMessage(value: unknown): value is LocalMessage {
   if (message.type === "PREVIEW") return validScene(message.scene);
   return message.type === "MASTER"
     && numberInRange(message.volume, 0, 100)
-    && typeof message.muted === "boolean";
+    && typeof message.muted === "boolean"
+    && (message.revision === undefined
+      || (Number.isSafeInteger(message.revision) && (message.revision as number) >= 0));
 }

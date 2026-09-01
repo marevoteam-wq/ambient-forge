@@ -1,23 +1,23 @@
 {
-    "name":  "Ambient Forge",
-    "description":  "Synchronized music and ambience mixer for Owlbear Rodeo",
-    "version":  "0.1.6",
-    "manifest_version":  1,
-    "author":  "Marevo",
-    "homepage_url":  "https://ambient-forge.marevo.workers.dev/about",
-    "icon":  "/icon.svg",
-    "background_url":  "/background.html",
-    "action":  {
-                   "title":  "Ambient Forge",
-                   "icon":  "/toolbar-logo-v2.svg",
-                   "popover":  "/",
-                   "width":  720,
-                   "height":  700
-               },
-    "permissions":  [
-                        {
-                            "name":  "autoplay",
-                            "reason":  "Play synchronized music and ambience selected by the game master"
-                        }
-                    ]
+  "name": "Ambient Forge",
+  "description": "Synchronized music and ambience mixer for Owlbear Rodeo",
+  "version": "0.1.9",
+  "manifest_version": 1,
+  "author": "Marevo",
+  "homepage_url": "https://ambient-forge.marevo.workers.dev/about",
+  "icon": "/icon.svg",
+  "permissions": [
+    {
+      "name": "autoplay",
+      "reason": "Play synchronized music and ambience selected by the game master"
+    }
+  ],
+  "background_url": "/background.html",
+  "action": {
+    "title": "Ambient Forge",
+    "icon": "/toolbar-logo-v2.svg",
+    "popover": "/",
+    "width": 720,
+    "height": 700
+  }
 }
