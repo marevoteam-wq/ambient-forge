@@ -2,6 +2,12 @@
 
 All notable changes to Ambient Forge are documented in this file.
 
+## 0.1.10 - 2026-10-12
+
+- Avoided redundant Play/Pause commands to unaffected audio and YouTube tracks during scene changes.
+- Cleared an old fade-out when the same scene is restarted quickly, preventing overlapping copies.
+- Added playback regression tests for fade-out, rapid restart, and 0% YouTube volume.
+
 ## 0.1.9 - 2026-09-01
 
 - Made local master volume and mute updates smooth and reliable, including a true mute at 0%.
