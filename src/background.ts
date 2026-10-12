@@ -29,6 +29,7 @@ type Runtime = {
   ready: boolean;
   gain: number;
   paused: boolean;
+  playbackRequested?: boolean;
   retiring: boolean;
   destroyed: boolean;
 };
@@ -141,7 +142,10 @@ function shouldPlay(runtime: Runtime): boolean {
 
 function syncPlayback(runtime: Runtime) {
   if (runtime.destroyed || !runtime.ready) return;
-  if (shouldPlay(runtime)) {
+  const play = shouldPlay(runtime);
+  if (runtime.playbackRequested === play) return;
+  runtime.playbackRequested = play;
+  if (play) {
     if (runtime.audio) void runtime.audio.play().catch(() => undefined);
     runtime.player?.playVideo();
   } else {
@@ -283,11 +287,16 @@ function destroy(runtime: Runtime) {
 function removeRuntime(runtime: Runtime, immediate = false) {
   if (runtimes.get(runtime.key) === runtime) runtimes.delete(runtime.key);
   runtime.retiring = true;
+  if (runtime.retry) clearTimeout(runtime.retry);
+  runtime.retry = undefined;
   if (immediate || runtime.scene.fadeOut <= 0) destroy(runtime);
   else fade(runtime, runtime.gain, 0, runtime.scene.fadeOut * 1000, () => destroy(runtime));
 }
 
 function activateRuntime(runtime: Runtime) {
+  for (const retiring of [...liveRuntimes]) {
+    if (retiring.key === runtime.key && retiring.retiring) destroy(retiring);
+  }
   const replaced = runtimes.get(runtime.key);
   if (replaced && replaced !== runtime) removeRuntime(replaced, true);
   runtimes.set(runtime.key, runtime);
